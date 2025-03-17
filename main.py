@@ -10,7 +10,7 @@ class DownloadPlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
     
-    @filter.command("download")
+    @filter.command("dl")
     async def download_file(self, event: AstrMessageEvent):
         '''从指定URL下载文件'''
         # 解析消息内容
