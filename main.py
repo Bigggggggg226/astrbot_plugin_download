@@ -1,21 +1,46 @@
-from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult
-from astrbot.api.star import Context, Star, register
-from astrbot.api import logger
+from astrbot.api.all import *
+import re
+import requests
+import os
+import time
 
-@register("helloworld", "YourName", "一个简单的 Hello World 插件", "1.0.0")
-class MyPlugin(Star):
+@register("download_link", "Your Name", "Downloads files from links in messages", "1.0.0")
+class DownloadLinkPlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
-    
-    # 注册指令的装饰器。指令名为 helloworld。注册成功后，发送 `/helloworld` 就会触发这个指令，并回复 `你好, {user_name}!`
-    @filter.command("helloworld")
-    async def helloworld(self, event: AstrMessageEvent):
-        '''这是一个 hello world 指令''' # 这是 handler 的描述，将会被解析方便用户了解插件内容。建议填写。
-        user_name = event.get_sender_name()
-        message_str = event.message_str # 用户发的纯文本消息字符串
-        message_chain = event.get_messages() # 用户所发的消息的消息链 # from astrbot.api.message_components import *
-        logger.info(message_chain)
-        yield event.plain_result(f"Hello, {user_name}, 你发了 {message_str}!") # 发送一条纯文本消息
+        self.download_path = 'downloads/'
+        if not os.path.exists(self.download_path):
+            os.makedirs(self.download_path)
 
-    async def terminate(self):
-        '''可选择实现 terminate 函数，当插件被卸载/停用时会调用。'''
+    def handle_message(self, event):
+        message = event.message
+        urls = re.findall(r'https?://\S+', message)
+        for url in urls:
+            if self.download_file(url):
+                self.send_message(event, f"Downloaded {url}")
+            else:
+                self.send_message(event, f"Failed to download {url}")
+
+    def download_file(self, url):
+        try:
+            response = requests.get(url)
+            if response.status_code == 200:
+                filename = url.split('/')[-1]
+                if not filename:
+                    parts = url.split('/')
+                    if parts[-1] == '':
+                        filename = parts[-2]
+                    else:
+                        filename = 'index.html'
+                full_path = os.path.join(self.download_path, filename)
+                if os.path.exists(full_path):
+                    filename = f"{filename}_{int(time.time())}.tmp"
+                    full_path = os.path.join(self.download_path, filename)
+                with open(full_path, 'wb') as f:
+                    f.write(response.content)
+                return True
+            else:
+                return False
+        except Exception as e:
+            print(f"Error downloading {url}: {e}")
+            return False
