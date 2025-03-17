@@ -1,75 +1,61 @@
 import re
+import os
 import aiohttp
-from pathlib import Path
-from urllib.parse import urlparse
-from astrbot.api.event import AstrMessageEvent, MessageEventFilter
-from astrbot.api.star import Context, Star, register
-from astrbot.api import logger
+import urllib.parse
+from astrbot import Star, filter, register
+from astrbot.message_components import Plain
 
-@register("LinkDownloader", "YourName", "智能链接下载插件", "1.0.2")
-class LinkDownloader(Star):
-    def __init__(self, context: Context):
-        super().__init__(context)
-        self.download_dir = Path("data/downloads")
-        self.download_dir.mkdir(parents=True, exist_ok=True)
-        self.session = aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=60),
-            headers={"User-Agent": "AstrBot-Downloader/1.2"}
-        )
+@register("downloader", "Your Name", "A plugin to download files from links detected in messages", "1.0.0", "https://github.com/yourusername/astrbot_plugin_downloader")
+class Downloader(Star):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        downloads_dir = 'data/plugins/astrbot_plugin_downloader/downloads'
+        if not os.path.exists(downloads_dir):
+            os.makedirs(downloads_dir)
 
-    @MessageEventFilter.message()
-    async def handle_message(self, event: AstrMessageEvent):
-        """链接消息处理器"""
-        url_pattern = r'https?://(?:[-\w.]|(?:%[\da-fA-F]{2}))+\S+'
-        urls = re.findall(url_pattern, event.message_str)
-        
-        if not urls:
-            return
+    async def on_message(self, event):
+        message_chain = event.message_chain
+        for component in message_chain:
+            if isinstance(component, Plain):
+                text = component.text
+                urls = re.findall(r'https?://[^\s]+', text)
+                for url in urls:
+                    if await self.is_file(url):
+                        await self.download_file(url)
 
-        results = []
-        for url in urls[:3]:  # 限制最大处理数
-            try:
-                filename, size = await self._download(url)
-                results.append(f"✅ 下载完成：{filename} ({size}MB)")
-            except Exception as e:
-                results.append(f"❌ 下载失败：{str(e)}")
-                logger.error(f"下载异常：{url}", exc_info=True)
+    async def is_file(self, url):
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.head(url) as response:
+                    content_type = response.headers.get('Content-Type', '')
+                    if 'text' not in content_type:
+                        return True
+                    return False
+        except:
+            return False
 
-        yield event.reply("\n".join(results))
-
-    async def _download(self, url: str) -> tuple[str, float]:
-        """执行下载操作"""
-        async with self.session.get(url) as resp:
-            if resp.status != 200:
-                raise Exception(f"HTTP {resp.status}")
-            
-            # 文件名处理
-            filename = self._get_filename(resp, url)
-            filepath = self.download_dir / self._sanitize(filename)
-            
-            # 分块写入
-            total = 0
-            with open(filepath, 'wb') as f:
-                async for chunk in resp.content.iter_chunked(1_048_576):  # 1MB/chunk
-                    f.write(chunk)
-                    total += len(chunk)
-                    if total > 100_000_000:  # 100MB限制
-                        raise Exception("文件超过大小限制")
-            
-            return filename, round(total / 1_048_576, 2)
-
-    def _get_filename(self, resp, url: str) -> str:
-        """获取安全文件名"""
-        if cd := resp.headers.get("Content-Disposition"):
-            if match := re.search(r'filename\*?=["\']?(?:UTF-\d["\']*)?([^;"\']+)', cd):
-                return match.group(1).strip('"')
-        return Path(urlparse(url).path).name or "unnamed_file"
-
-    def _sanitize(self, name: str) -> str:
-        """清理危险字符"""
-        return re.sub(r'[\\/:*?"<>|]', "_", name).strip()
-
-    async def terminate(self):
-        """关闭资源"""
-        await self.session.close()
-        logger.info("下载器已安全关闭")
+    async def download_file(self, url):
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url) as response:
+                    if response.status == 200:
+                        content_disposition = response.headers.get('Content-Disposition', '')
+                        if content_disposition:
+                            _, params = content_disposition.split(';', 1)
+                            filename = params.strip().split('=')[1].strip('"')
+                        else:
+                            parsed_url = urllib.parse.urlparse(url)
+                            filename = parsed_url.path.split('/')[-1]
+                            if not filename:
+                                filename = 'unknown_file'
+                        path = f'data/plugins/astrbot_plugin_downloader/downloads/{filename}'
+                        if os.path.exists(path):
+                            print(f'File already exists: {path}')
+                            return
+                        with open(path, 'wb') as f:
+                            f.write await response.read()
+                        print(f'Downloaded {url} to {path}')
+                    else:
+                        print(f'Failed to download {url}: HTTP {response.status}')
+        except Exception as e:
+            print(f'Error downloading {url}: {e}')
