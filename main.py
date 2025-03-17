@@ -1,6 +1,6 @@
 from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult
 from astrbot.api.star import Context, Star, register
-import aiohttp
+import aiohttp  # 异步HTTP库，用于下载内容
 import re
 
 @register("link-downloader", "Your Name", "自动检测并下载链接内容的插件", "1.0.0", "repo url")
@@ -15,7 +15,7 @@ class LinkDownloaderPlugin(Star):
             else:
                 return None
 
-    @filter.message()
+    @filter.all()  # 假设这是可用的装饰器
     async def on_message(self, event: AstrMessageEvent):
         message = event.message_str
         urls = self.extract_urls(message)
