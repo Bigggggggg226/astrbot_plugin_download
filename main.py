@@ -1,62 +1,59 @@
-from nakuru.entities.components import *
-from nakuru import GroupMessage, FriendMessage
-from botpy.message import Message, DirectMessage
-from cores.qqbot.global_object import AstrMessageEvent
-import requests
 import re
 import os
+import aiohttp
+from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult
+from astrbot.api.star import Context, Star, register
+from astrbot.api import logger
 from urllib.parse import urlparse
+from pathlib import Path
 
-class DownloadPlugin:
-    def __init__(self):
-        self.save_path = "downloads"  # 默认下载目录
-        self.allowed_extensions = ['.pdf', '.jpg', '.png']  # 允许下载的文件类型
-        os.makedirs(self.save_path, exist_ok=True)
+@register("LinkDownloader", "YourName", "链接检测与自动下载插件", "1.0.0")
+class LinkDownloader(Star):
+    def __init__(self, context: Context):
+        super().__init__(context)
+        self.download_dir = Path("data/downloads")
+        self.download_dir.mkdir(parents=True, exist_ok=True)
+        self.session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30))
 
-    def run(self, ame: AstrMessageEvent):
-        # 检测消息中的链接
-        urls = re.findall(r'https?://\S+', ame.message_str)
+    @filter.message()
+    async def handle_message(self, event: AstrMessageEvent):
+        """检测消息中的链接并触发下载"""
+        urls = re.findall(r'https?://[^\s<>"]+|www\.[^\s<>"]+', event.message_str)
         
-        if urls:
-            results = []
-            for url in urls:
-                try:
-                    # 下载文件
-                    response = requests.get(url, stream=True)
-                    response.raise_for_status()
-                    
-                    # 解析文件名
-                    parsed = urlparse(url)
-                    filename = os.path.basename(parsed.path)
-                    if not filename:
-                        filename = f"file_{int(time.time())}"
-                    
-                    # 检查文件类型
-                    _, ext = os.path.splitext(filename)
-                    if ext.lower() not in self.allowed_extensions:
-                        return True, (False, "不支持的文件类型", "download")
-                    
-                    # 保存文件
-                    full_path = os.path.join(self.save_path, filename)
-                    with open(full_path, 'wb') as f:
-                        for chunk in response.iter_content(chunk_size=8192):
-                            if chunk:
-                                f.write(chunk)
-                                
-                    results.append(f"✅ 下载成功：{filename}")
-                except Exception as e:
-                    results.append(f"❌ 下载失败：{str(e)}")
-            
-            reply = "\n".join(results)
-            return True, (True, reply, "download")
-            
-        return False, None
+        if not urls:
+            return False, None
 
-    def info(self):
-        return {
-            "name": "Downloader",
-            "desc": "链接自动下载插件",
-            "help": "发送包含文件链接的消息即可自动下载\n支持格式：" + ", ".join(self.allowed_extensions),
-            "version": "v1.0",
-            "author": "AstrBot-Plugin-Author"
-        }
+        results = []
+        for url in urls[:3]:  # 限制每次最多处理3个链接
+            try:
+                filename, filesize = await self.download_file(url)
+                results.append(f"✅ 下载成功：{filename} ({filesize}MB)")
+            except Exception as e:
+                results.append(f"❌ 下载失败：{str(e)}")
+        
+        yield event.plain_result("\n".join(results))
+
+    async def download_file(self, url):
+        """异步下载文件"""
+        async with self.session.get(url, allow_redirects=True) as response:
+            if response.status != 200:
+                raise Exception(f"HTTP {response.status}")
+
+            # 获取文件名
+            content_disposition = response.headers.get("Content-Disposition", "")
+            filename = re.findall(r'filename="?(.+?)"?(;|$)', content_disposition)
+            filename = filename[0][0] if filename else Path(urlparse(url).path).name
+            
+            # 保存文件
+            filepath = self.download_dir / filename
+            total_size = 0
+            with open(filepath, 'wb') as f:
+                async for chunk in response.content.iter_chunked(1024):
+                    f.write(chunk)
+                    total_size += len(chunk)
+            
+            return filename, round(total_size / (1024*1024), 2)
+
+    async def terminate(self):
+        """关闭会话"""
+        await self.session.close()
