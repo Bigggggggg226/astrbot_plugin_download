@@ -1,17 +1,18 @@
 import re
 import os
 import aiohttp
+import aiofiles
 import urllib.parse
-from astrbot import Star, filter, register
+from astrbot import Star, register
 from astrbot.message_components import Plain
 
 @register("downloader", "Your Name", "A plugin to download files from links detected in messages", "1.0.0", "https://github.com/yourusername/astrbot_plugin_downloader")
 class Downloader(Star):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        downloads_dir = 'data/plugins/astrbot_plugin_downloader/downloads'
-        if not os.path.exists(downloads_dir):
-            os.makedirs(downloads_dir)
+        self.downloads_dir = 'data/plugins/astrbot_plugin_downloader/downloads'
+        if not os.path.exists(self.downloads_dir):
+            os.makedirs(self.downloads_dir)
 
     async def on_message(self, event):
         message_chain = event.message_chain
@@ -48,12 +49,12 @@ class Downloader(Star):
                             filename = parsed_url.path.split('/')[-1]
                             if not filename:
                                 filename = 'unknown_file'
-                        path = f'data/plugins/astrbot_plugin_downloader/downloads/{filename}'
+                        path = os.path.join(self.downloads_dir, filename)
                         if os.path.exists(path):
                             print(f'File already exists: {path}')
                             return
-                        with open(path, 'wb') as f:
-                            f.write await response.read()
+                        async with aiofiles.open(path, 'wb') as f:
+                            await f.write(await response.read())
                         print(f'Downloaded {url} to {path}')
                     else:
                         print(f'Failed to download {url}: HTTP {response.status}')
