@@ -1,64 +1,21 @@
-import re
-import os
-import aiohttp
-import aiofiles
-import urllib.parse
 from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult
 from astrbot.api.star import Context, Star, register
+from astrbot.api import logger
 
-@register("downloader", "Your Name", "A plugin to download files from links detected in messages", "1.0.0", "https://github.com/yourusername/astrbot_plugin_downloader")
-class Downloader(Star):
+@register("helloworld", "YourName", "一个简单的 Hello World 插件", "1.0.0")
+class MyPlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
-        self.downloads_dir = 'data/plugins/astrbot_plugin_downloader/downloads'
-        if not os.path.exists(self.downloads_dir):
-            os.makedirs(self.downloads_dir)
+    
+    # 注册指令的装饰器。指令名为 helloworld。注册成功后，发送 `/helloworld` 就会触发这个指令，并回复 `你好, {user_name}!`
+    @filter.command("helloworld")
+    async def helloworld(self, event: AstrMessageEvent):
+        '''这是一个 hello world 指令''' # 这是 handler 的描述，将会被解析方便用户了解插件内容。建议填写。
+        user_name = event.get_sender_name()
+        message_str = event.message_str # 用户发的纯文本消息字符串
+        message_chain = event.get_messages() # 用户所发的消息的消息链 # from astrbot.api.message_components import *
+        logger.info(message_chain)
+        yield event.plain_result(f"Hello, {user_name}, 你发了 {message_str}!") # 发送一条纯文本消息
 
-    @filter.message_type(AstrMessageEvent)
-    async def on_message(self, event: AstrMessageEvent) -> MessageEventResult:
-        message_chain = event.message_chain
-        for component in message_chain:
-            if isinstance(component, Plain):
-                text = component.text
-                urls = re.findall(r'https?://[^\s]+', text)
-                for url in urls:
-                    if await self.is_file(url):
-                        await self.download_file(url)
-        return MessageEventResult()
-
-    async def is_file(self, url):
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.head(url) as response:
-                    content_type = response.headers.get('Content-Type', '')
-                    if 'text' not in content_type:
-                        return True
-                    return False
-        except:
-            return False
-
-    async def download_file(self, url):
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url) as response:
-                    if response.status == 200:
-                        content_disposition = response.headers.get('Content-Disposition', '')
-                        if content_disposition:
-                            _, params = content_disposition.split(';', 1)
-                            filename = params.strip().split('=')[1].strip('"')
-                        else:
-                            parsed_url = urllib.parse.urlparse(url)
-                            filename = parsed_url.path.split('/')[-1]
-                            if not filename:
-                                filename = 'unknown_file'
-                        path = os.path.join(self.downloads_dir, filename)
-                        if os.path.exists(path):
-                            print(f'File already exists: {path}')
-                            return
-                        async with aiofiles.open(path, 'wb') as f:
-                            await f.write(await response.read())
-                        print(f'Downloaded {url} to {path}')
-                    else:
-                        print(f'Failed to download {url}: HTTP {response.status}')
-        except Exception as e:
-            print(f'Error downloading {url}: {e}')
+    async def terminate(self):
+        '''可选择实现 terminate 函数，当插件被卸载/停用时会调用。'''
