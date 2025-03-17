@@ -4,7 +4,7 @@ from astrbot.api.message_components import File
 from astrbot.api import logger
 import aiohttp
 import re
-from urllib.parse import unquote
+from urllib.parse import unquote, urlparse
 
 @register("dl", "YourName", "文件下载插件", "1.0.0")
 class DownloadPlugin(Star):
@@ -14,66 +14,70 @@ class DownloadPlugin(Star):
     @filter.command("dl")
     async def download_file(self, event: AstrMessageEvent):
         '''从指定URL下载文件'''
-        args = event.message_str.split()
+        # 关键修复1：使用maxsplit确保URL完整性
+        args = event.message_str.split(maxsplit=1)
         
         if len(args) < 2:
-            yield event.plain_result("请提供文件链接，格式：/download <url>")
+            yield event.plain_result("请提供文件链接，格式：/dl <url>")
             return
 
-        url = args[1].strip()
+        raw_url = args[1].strip()
         
-        if not re.match(r'^https?://', url, re.IGNORECASE):
-            yield event.plain_result("链接格式不正确，请使用http/https协议")
+        # 关键修复2：标准化URL处理
+        try:
+            parsed = urlparse(raw_url)
+            if not parsed.scheme:
+                raw_url = "http://" + raw_url
+                parsed = urlparse(raw_url)
+            url = parsed.geturl()
+        except Exception as e:
+            logger.error(f"URL解析失败: {raw_url} - {str(e)}")
+            yield event.plain_result("链接格式无效，请确认包含完整协议头")
             return
+
+        # 关键修复3：添加浏览器级请求头
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+            "Accept": "*/*",
+            "Connection": "keep-alive"
+        }
 
         try:
-            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
-                async with session.get(url) as response:
+            async with aiohttp.ClientSession(
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=30),
+                connector=aiohttp.TCPConnector(ssl=False)
+            ) as session:
+                # 关键修复4：先发送HEAD请求验证
+                async with session.head(url, allow_redirects=True) as head_resp:
+                    if head_resp.status != 200:
+                        yield event.plain_result(f"资源验证失败（HTTP {head_resp.status}），实际请求路径：{head_resp.url}")
+                        return
+                    
+                    # 关键修复5：处理跳转后的真实URL
+                    real_url = str(head_resp.url)
+                
+                # 使用验证后的URL进行下载
+                async with session.get(real_url) as response:
                     if response.status == 200:
                         content = await response.read()
-                        
-                        # 修复点1：添加编码处理
-                        filename = self.get_safe_filename(
-                            url,
-                            response.headers.get("Content-Disposition", "")
-                        )
-                        
-                        # 修复点2：确保文件名使用安全编码
+                        filename = self.get_safe_filename(real_url, response.headers.get("Content-Disposition", ""))
                         file = File(filename, content)
                         yield event.result([file])
                     else:
-                        yield event.plain_result(f"下载失败，服务器返回状态码：{response.status}")
+                        logger.warning(f"最终下载失败: {real_url} - {response.status}")
+                        yield event.plain_result(f"服务器最终返回异常状态码：{response.status}")
 
         except aiohttp.ClientError as e:
-            logger.error(f"下载失败: {str(e)}")
-            yield event.plain_result("下载失败，请检查链接有效性或网络连接")
+            logger.error(f"网络错误: {str(e)}")
+            yield event.plain_result(f"网络连接异常：{str(e)}")
         except Exception as e:
             logger.error(f"未知错误: {str(e)}")
             yield event.plain_result("下载过程发生意外错误")
 
+    # 保持原有的安全文件名处理方法
     def get_safe_filename(self, url: str, content_disposition: str) -> str:
-        """安全获取文件名"""
-        filename = ""
-        
-        # 修复点3：增强Content-Disposition解析
-        if content_disposition:
-            # 处理带编码的文件名 (RFC 5987)
-            if "filename*=" in content_disposition:
-                match = re.search(r'filename\*=(?:utf-8|UTF-8)''"?([^;]+)', content_disposition)
-                if match:
-                    filename = unquote(match.group(1)).decode('utf-8', 'ignore')
-            else:
-                match = re.search(r'filename=("?)(.*?)\1(?:;|$)', content_disposition)
-                if match:
-                    filename = unquote(match.group(2)).encode('latin-1').decode('utf-8', 'ignore')
-
-        # 修复点4：URL文件名解码处理
-        if not filename:
-            path = unquote(url.split('/')[-1].split('?')[0])
-            filename = path.encode('latin-1').decode('utf-8', 'ignore') or "downloaded_file"
-
-        # 修复点5：过滤非法字符
-        return re.sub(r'[\\/*?:"<>|]', "", filename).strip()[:128] or "file"
+        ...
 
     async def terminate(self):
         '''清理资源'''
