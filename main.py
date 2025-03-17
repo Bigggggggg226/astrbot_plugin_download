@@ -4,6 +4,7 @@ from astrbot.api.message_components import File
 from astrbot.api import logger
 import aiohttp
 import re
+import time
 from urllib.parse import unquote, urlparse, unquote_to_bytes
 
 @register("dl", "YourName", "文件下载插件", "1.0.0")
@@ -67,7 +68,7 @@ class DownloadPlugin(Star):
                     content = await response.read()
                     logger.debug(f"[文件下载] 接收大小: {len(content)/1024:.2f}KB")
                     
-                    filename = self.get_ultimate_safe_filename(
+                    filename = self.ultimate_filename_processor(
                         real_url,
                         response.headers.get("Content-Disposition", "")
                     )
@@ -83,66 +84,88 @@ class DownloadPlugin(Star):
             logger.exception("[系统错误] 未知异常")
             yield event.plain_result("系统处理异常")
 
-    def get_ultimate_safe_filename(self, url: str, content_disposition: str) -> str:
-        """终极安全文件名处理方案"""
-        def strict_decode(data: bytes) -> str:
-            """四重编码回退策略"""
-            for enc in ('utf-8', 'gbk', 'latin-1', 'gb2312'):
+    def ultimate_filename_processor(self, url: str, content_disposition: str) -> str:
+        """五层防护文件名处理器"""
+        # 编码优先级列表（扩展版）
+        ENCODING_PRIORITY = [
+            'utf-8', 'gbk', 'gb18030', 'big5',
+            'shift_jis', 'euc-kr', 'iso-8859-1',
+            'windows-1252', 'utf-16'
+        ]
+
+        def advanced_decode(byte_data: bytes) -> str:
+            """智能解码器"""
+            for encoding in ENCODING_PRIORITY:
                 try:
-                    return data.decode(enc)
-                except UnicodeDecodeError:
+                    decoded = byte_data.decode(encoding, errors='strict')
+                    # 有效性验证：排除控制字符（保留空格）
+                    if all(ord(c) >= 0x20 or c in ('\n', '\r', '\t') for c in decoded):
+                        return decoded
+                except (UnicodeDecodeError, LookupError):
                     continue
-            return data.decode('utf-8', errors='replace').replace('\ufffd', '_')
+            # 最终回退策略
+            return byte_data.decode('utf-8', errors='replace').replace('\ufffd', '_')
 
-        def sanitize_name(name: str) -> str:
-            """严格字符白名单过滤"""
-            allowed = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_. ")
-            return ''.join([c if c in allowed else '_' for c in name]).strip()
+        def sanitize_filename(name: str) -> str:
+            """安全字符过滤器"""
+            # 允许：中文、日文、韩文、基本拉丁字母、数字、常用符号
+            pattern = re.compile(
+                r'[^\w\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7a3\-_.() ]',
+                re.UNICODE
+            )
+            sanitized = pattern.sub('_', name)
+            # 清理连续特殊字符
+            return re.sub(r'[_]{2,}', '_', sanitized).strip('_')
 
-        # 第一阶段：原始数据获取
+        # 阶段1：内容协商处理
         filename = ""
-        
-        # 解析Content-Disposition头
         if content_disposition:
-            try:
-                # RFC 5987扩展处理
-                if 'filename*=' in content_disposition:
-                    match = re.search(r'filename\*=([^;]+)\'\'"?([^;]+)', content_disposition, re.IGNORECASE)
-                    if match:
-                        encoding = match.group(1).lower() or 'utf-8'
-                        decoded_bytes = unquote_to_bytes(match.group(2))
-                        filename = strict_decode(decoded_bytes)
-                
-                # 普通filename参数处理
-                if not filename:
-                    match = re.search(r'filename=("?)(.*?)\1', content_disposition)
-                    if match:
-                        decoded_bytes = unquote_to_bytes(match.group(2))
-                        filename = strict_decode(decoded_bytes)
-            except Exception as e:
-                logger.error(f"[文件名解析] Content-Disposition处理失败: {str(e)}")
+            # 处理RFC5987扩展格式
+            if 'filename*=' in content_disposition:
+                match = re.search(r'filename\*=([^;]+)\'\'"?([^;]+)', content_disposition, re.I)
+                if match:
+                    try:
+                        encoding_part = match.group(1).lower()
+                        value_part = match.group(2)
+                        decoded_bytes = unquote_to_bytes(value_part)
+                        filename = advanced_decode(decoded_bytes)
+                        logger.debug(f"[RFC5987解析] 检测到编码:{encoding_part} 原始值:{value_part}")
+                    except Exception as e:
+                        logger.error(f"[RFC5987错误] {str(e)}")
 
-        # 从URL路径解析
+            # 处理普通filename参数
+            if not filename:
+                match = re.search(r'filename=("?)(.*?)\1', content_disposition)
+                if match:
+                    try:
+                        raw_value = unquote_to_bytes(match.group(2))
+                        filename = advanced_decode(raw_value)
+                    except Exception as e:
+                        logger.error(f"[普通参数解析错误] {str(e)}")
+
+        # 阶段2：URL路径解析
         if not filename:
             try:
-                path_part = url.split('/')[-1].split('?')[0]
-                decoded_bytes = unquote_to_bytes(path_part)
-                filename = strict_decode(decoded_bytes)
+                path_segment = url.split('/')[-1].split('?')[0]
+                decoded_bytes = unquote_to_bytes(path_segment)
+                filename = advanced_decode(decoded_bytes)
+                logger.debug(f"[URL路径解析] 原始路径:{path_segment}")
             except Exception as e:
-                logger.error(f"[文件名解析] URL路径处理失败: {str(e)}")
-                filename = "download_file"
+                logger.error(f"[URL解析错误] {str(e)}")
 
-        # 第二阶段：终极净化处理
-        filename = sanitize_name(filename)
+        # 阶段3：深度清洗
+        filename = sanitize_filename(filename or "")
         
-        # 第三阶段：强制UTF-8合规
+        # 阶段4：强制UTF-8合规化
         final_name = filename.encode('utf-8', errors='replace').decode('utf-8')
-        final_name = re.sub(r'_+', '_', final_name)  # 合并连续下划线
+        final_name = re.sub(r'\s+', ' ', final_name)  # 标准化空白字符
+
+        # 阶段5：最终保障
+        if not final_name or len(final_name.encode('utf-8')) > 255:
+            timestamp = int(time.time())
+            final_name = f"file_{timestamp}"
         
-        # 默认值和长度限制
-        if not final_name.strip('._'):
-            final_name = "file_" + str(int(time.time()))
-        return final_name[:100]  # 保守长度限制
+        return final_name[:220]  # 预留UTF-8多字节空间
 
     async def terminate(self):
         logger.info("[系统] 插件已卸载")
