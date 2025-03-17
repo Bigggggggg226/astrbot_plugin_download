@@ -5,7 +5,6 @@ import aiofiles
 import urllib.parse
 from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult
 from astrbot.api.star import Context, Star, register
-from astrbot.message_components import Plain
 
 @register("downloader", "Your Name", "A plugin to download files from links detected in messages", "1.0.0", "https://github.com/yourusername/astrbot_plugin_downloader")
 class Downloader(Star):
