@@ -3,7 +3,7 @@ import os
 import aiohttp
 import aiofiles
 import urllib.parse
-from astrbot import Star, register
+from astrbot.core import Star, register
 from astrbot.message_components import Plain
 
 # 注册插件，替换为您自己的元数据
