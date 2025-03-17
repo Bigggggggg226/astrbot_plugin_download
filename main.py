@@ -4,44 +4,41 @@ from astrbot.api.message_components import File
 from astrbot.api import logger
 import aiohttp
 import re
+from urllib.parse import unquote
 
 @register("download", "YourName", "文件下载插件", "1.0.0")
 class DownloadPlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
     
-    @filter.command("dl")
+    @filter.command("download")
     async def download_file(self, event: AstrMessageEvent):
         '''从指定URL下载文件'''
-        # 解析消息内容
         args = event.message_str.split()
         
-        # 检查参数有效性
         if len(args) < 2:
             yield event.plain_result("请提供文件链接，格式：/download <url>")
             return
 
         url = args[1].strip()
         
-        # 验证URL格式
         if not re.match(r'^https?://', url, re.IGNORECASE):
             yield event.plain_result("链接格式不正确，请使用http/https协议")
             return
 
         try:
-            # 异步下载文件
             async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
                 async with session.get(url) as response:
                     if response.status == 200:
                         content = await response.read()
                         
-                        # 获取文件名（优先从Content-Disposition获取）
-                        filename = self.get_filename(
+                        # 修复点1：添加编码处理
+                        filename = self.get_safe_filename(
                             url,
                             response.headers.get("Content-Disposition", "")
                         )
                         
-                        # 创建文件消息组件
+                        # 修复点2：确保文件名使用安全编码
                         file = File(filename, content)
                         yield event.result([file])
                     else:
@@ -54,19 +51,29 @@ class DownloadPlugin(Star):
             logger.error(f"未知错误: {str(e)}")
             yield event.plain_result("下载过程发生意外错误")
 
-    def get_filename(self, url: str, content_disposition: str) -> str:
-        """通过解析响应头或URL获取文件名"""
-        # 从Content-Disposition解析文件名
-        if content_disposition:
-            match = re.findall("filename=(.+)", content_disposition)
-            if match:
-                return match[0].strip('"')
+    def get_safe_filename(self, url: str, content_disposition: str) -> str:
+        """安全获取文件名"""
+        filename = ""
         
-        # 从URL路径解析文件名
-        path = re.split(r"[\\/]", url)[-1]
-        if "." in path:
-            return path.split("?")[0]  # 去除URL参数
-        return "downloaded_file"  # 默认文件名
+        # 修复点3：增强Content-Disposition解析
+        if content_disposition:
+            # 处理带编码的文件名 (RFC 5987)
+            if "filename*=" in content_disposition:
+                match = re.search(r'filename\*=(?:utf-8|UTF-8)''"?([^;]+)', content_disposition)
+                if match:
+                    filename = unquote(match.group(1)).decode('utf-8', 'ignore')
+            else:
+                match = re.search(r'filename=("?)(.*?)\1(?:;|$)', content_disposition)
+                if match:
+                    filename = unquote(match.group(2)).encode('latin-1').decode('utf-8', 'ignore')
+
+        # 修复点4：URL文件名解码处理
+        if not filename:
+            path = unquote(url.split('/')[-1].split('?')[0])
+            filename = path.encode('latin-1').decode('utf-8', 'ignore') or "downloaded_file"
+
+        # 修复点5：过滤非法字符
+        return re.sub(r'[\\/*?:"<>|]', "", filename).strip()[:128] or "file"
 
     async def terminate(self):
         '''清理资源'''
